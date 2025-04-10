@@ -1,7 +1,7 @@
 import datetime
 from zoneinfo import ZoneInfo
 from google.adk.agents import Agent
-from custom_llm import MyLlm
+from .custom_llm import MyLlm
 from google.adk.models.llm_request import LlmRequest
 
 def get_weather(city: str) -> dict:
