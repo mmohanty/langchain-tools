@@ -13,7 +13,7 @@ class MyLlm(BaseLlm):
     def supported_models(cls) -> list[str]:
         return [r"my-llm.*"]
 
-    async def generate_content_async(
+    async def generate_content_async1(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
         prompt = self._build_prompt_from_contents(llm_request.contents)
@@ -74,3 +74,74 @@ class MyLlm(BaseLlm):
                 response.raise_for_status()
                 data = await response.json()
                 return data.get("text", "")
+
+    def _format_chat_history(self, contents: list[types.Content]) -> list[dict]:
+        messages = []
+        for content in contents:
+            role = content.role or "user"
+            for part in content.parts:
+                if hasattr(part, "text"):
+                    messages.append({
+                        "role": role,
+                        "content": part.text
+                    })
+        return messages
+
+    def _format_tool_schemas(self, tools: list[types.Tool]) -> list[dict]:
+        tool_list = []
+        for tool in tools:
+            for func in tool.function_declarations:
+                tool_list.append({
+                    "name": func.name,
+                    "description": func.description,
+                    "parameters": func.parameters.model_dump()  # pydantic model to dict
+                })
+        return tool_list
+
+
+    async def generate_content_async(
+            self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        # 1. Extract system/user content
+        messages = self._format_chat_history(llm_request.contents)
+
+        # 2. Extract tools from config
+        tool_schemas = self._format_tool_schemas(llm_request.config.tools)
+
+        # 3. Build final prompt
+        prompt = {
+            "messages": messages,
+            "tools": tool_schemas,
+            "tool_choice": "auto",
+            "temperature": llm_request.config.temperature if llm_request.config else 0.7,
+            "max_tokens": llm_request.config.max_output_tokens if llm_request.config else 512,
+        }
+
+        # 4. Call backend LLM
+        response = await self._call_my_llm_api(prompt)
+
+        if "tool_call" in response:
+            tool_use = types.ToolUse(
+                name=response["tool_call"]["name"],
+                args=response["tool_call"]["args"],
+            )
+            content = types.Content(role="model", parts=[tool_use])
+            yield LlmResponse(content=content)
+        else:
+            content = types.Content(role="model", parts=[types.Part(text=response["text"])])
+            yield LlmResponse(content=content, partial=False, turn_complete=True)
+
+
+    async def _call_my_llm_api(self, prompt: dict) -> dict:
+        # Simulate a tool trigger when "weather" is in the prompt
+        full_text = " ".join(m["content"] for m in prompt["messages"])
+
+        if "weather" in full_text.lower():
+            return {
+                "tool_call": {
+                    "name": "get_weather",
+                    "args": {"city": "New York"}
+                }
+            }
+
+        return {"text": "Sorry, I don't understand the question."}
