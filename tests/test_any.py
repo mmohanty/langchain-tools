@@ -137,3 +137,33 @@ class MongoSchemaReader(SchemaReader):
             if doc:
                 schema[collection_name] = {k: type(v).__name__ for k, v in doc.items() if k != '_id'}
         return schema
+
+
+#factory.py
+
+from .readers.oracle import OracleSchemaReader
+from .readers.postgres import PostgresSchemaReader
+from .readers.mysql import MySQLSchemaReader
+from .readers.sqlite import SQLiteSchemaReader
+from .readers.mongo import MongoSchemaReader
+from .readers.json_reader import JSONSchemaReader
+
+def get_schema_reader(source_type: str, db_type: str = None, conn_details: dict = None, file_path: str = None):
+    if source_type == "json":
+        return JSONSchemaReader(file_path)
+    elif source_type == "db":
+        if db_type == "oracle":
+            return OracleSchemaReader(conn_details)
+        elif db_type == "postgres":
+            return PostgresSchemaReader(conn_details)
+        elif db_type == "mysql":
+            return MySQLSchemaReader(conn_details)
+        elif db_type == "sqlite":
+            return SQLiteSchemaReader(conn_details)
+        elif db_type == "mongodb":
+            return MongoSchemaReader(conn_details)
+        else:
+            raise ValueError(f"Unsupported db_type: {db_type}")
+    else:
+        raise ValueError(f"Unsupported source_type: {source_type}")
+
