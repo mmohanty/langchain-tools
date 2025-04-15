@@ -167,3 +167,42 @@ def get_schema_reader(source_type: str, db_type: str = None, conn_details: dict 
     else:
         raise ValueError(f"Unsupported source_type: {source_type}")
 
+
+
+# sqlserver.py
+
+import pyodbc
+from typing import Dict
+from .base import SchemaReader
+
+class SQLServerSchemaReader(SchemaReader):
+    def __init__(self, conn_details):
+        self.conn_details = conn_details
+
+    def get_schema(self) -> Dict[str, Dict[str, str]]:
+        conn_str = (
+            f"DRIVER={self.conn_details['driver']};"
+            f"SERVER={self.conn_details['server']};"
+            f"DATABASE={self.conn_details['database']};"
+            f"UID={self.conn_details['user']};"
+            f"PWD={self.conn_details['password']};"
+            f"TrustServerCertificate=yes;"
+        )
+        conn = pyodbc.connect(conn_str)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            ORDER BY TABLE_NAME, ORDINAL_POSITION
+        """)
+
+        schema = {}
+        for table, column, dtype in cursor.fetchall():
+            schema.setdefault(table, {})[column] = dtype
+
+        cursor.close()
+        conn.close()
+        return schema
+
+
