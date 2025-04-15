@@ -139,38 +139,7 @@ class MongoSchemaReader(SchemaReader):
         return schema
 
 
-#factory.py
-
-from .readers.oracle import OracleSchemaReader
-from .readers.postgres import PostgresSchemaReader
-from .readers.mysql import MySQLSchemaReader
-from .readers.sqlite import SQLiteSchemaReader
-from .readers.mongo import MongoSchemaReader
-from .readers.json_reader import JSONSchemaReader
-
-def get_schema_reader(source_type: str, db_type: str = None, conn_details: dict = None, file_path: str = None):
-    if source_type == "json":
-        return JSONSchemaReader(file_path)
-    elif source_type == "db":
-        if db_type == "oracle":
-            return OracleSchemaReader(conn_details)
-        elif db_type == "postgres":
-            return PostgresSchemaReader(conn_details)
-        elif db_type == "mysql":
-            return MySQLSchemaReader(conn_details)
-        elif db_type == "sqlite":
-            return SQLiteSchemaReader(conn_details)
-        elif db_type == "mongodb":
-            return MongoSchemaReader(conn_details)
-        else:
-            raise ValueError(f"Unsupported db_type: {db_type}")
-    else:
-        raise ValueError(f"Unsupported source_type: {source_type}")
-
-
-
-# sqlserver.py
-
+# text_to_sql_schema/readers/sqlserver.py
 import pyodbc
 from typing import Dict
 from .base import SchemaReader
@@ -205,48 +174,83 @@ class SQLServerSchemaReader(SchemaReader):
         conn.close()
         return schema
 
-# filter.py
 
-def filter_tables(schema: dict, include: dict) -> dict:
-    """
-    include = {
-        "exact": ["users", "orders"],
-        "starts_with": ["user_"],
-        "ends_with": ["_log"]
+# text_to_sql_schema/readers/factory.py
+import os
+from .postgres import PostgresSchemaReader
+from .mysql import MySQLSchemaReader
+from .sqlite import SQLiteSchemaReader
+from .mongo import MongoSchemaReader
+from .sqlserver import SQLServerSchemaReader
+from .json_reader import JSONSchemaReader
+
+
+def get_schema_reader(source_type: str, db_type: str = None, conn_details: dict = None, file_path: str = None):
+    if source_type == "json":
+        return JSONSchemaReader(file_path)
+    elif source_type == "db":
+        if db_type == "postgres":
+            return PostgresSchemaReader(conn_details)
+        elif db_type == "mysql":
+            return MySQLSchemaReader(conn_details)
+        elif db_type == "sqlite":
+            return SQLiteSchemaReader(conn_details)
+        elif db_type == "mongodb":
+            return MongoSchemaReader(conn_details)
+        elif db_type == "sqlserver":
+            return SQLServerSchemaReader(conn_details)
+        else:
+            raise ValueError(f"Unsupported db_type: {db_type}")
+    else:
+        raise ValueError(f"Unsupported source_type: {source_type}")
+
+
+# text_to_sql_schema/schema.py
+import os
+import json
+from dotenv import load_dotenv
+from .readers.factory import get_schema_reader
+
+load_dotenv()
+
+SCHEMA_CACHE_FILE = os.getenv("SCHEMA_CACHE_FILE", "schema_cache.json")
+
+
+def get_schema_from_db():
+    db_type = os.getenv("DB_TYPE")
+    source_type = os.getenv("SCHEMA_SOURCE", "db")
+    file_path = os.getenv("SCHEMA_FILE")
+
+    conn_details = {
+        "host": os.getenv("DB_HOST"),
+        "port": int(os.getenv("DB_PORT", 5432)),
+        "database": os.getenv("DB_NAME"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "service_name": os.getenv("DB_SERVICE_NAME"),
+        "driver": os.getenv("DB_DRIVER"),
+        "uri": os.getenv("DB_URI")
     }
-    """
-    result = {}
 
-    for table, columns in schema.items():
-        if (
-            table in include.get("exact", []) or
-            any(table.startswith(prefix) for prefix in include.get("starts_with", [])) or
-            any(table.endswith(suffix) for suffix in include.get("ends_with", []))
-        ):
-            result[table] = columns
-
-    return result
+    reader = get_schema_reader(
+        source_type=source_type,
+        db_type=db_type,
+        conn_details=conn_details,
+        file_path=file_path
+    )
+    return reader.get_schema()
 
 
-# example_usage.py
+def get_or_load_cached_schema():
+    if os.path.exists(SCHEMA_CACHE_FILE):
+        with open(SCHEMA_CACHE_FILE) as f:
+            return json.load(f)
 
-from config import config
-from factory import get_schema_reader
-from filter import filter_tables
+    schema = get_schema_from_db()
+    with open(SCHEMA_CACHE_FILE, "w") as f:
+        json.dump(schema, f)
+    return schema
 
-reader = get_schema_reader(
-    source_type=config["source_type"],
-    db_type=config.get("db_type"),
-    conn_details=config.get("conn_details"),
-    file_path=config.get("file_path")
-)
-
-full_schema = reader.get_schema()
-filtered_schema = filter_tables(full_schema, config["include_tables"])
-
-print(filtered_schema)
-
-# Utility function
 
 def schema_to_prompt(schema: dict) -> str:
     lines = ["The database has the following tables and columns:\n"]
@@ -254,24 +258,31 @@ def schema_to_prompt(schema: dict) -> str:
         lines.append(f"Table `{table}`:")
         for col, dtype in columns.items():
             lines.append(f"  - {col}: {dtype}")
-        lines.append("")  # Add blank line between tables
+        lines.append("")
     return "\n".join(lines)
 
 
-def generate_sql_from_text(nl_query: str, schema: dict) -> str:
-    schema_prompt = schema_to_prompt(schema)
+# text_to_sql_schema/tools.py
+from mcp import tool, tool_server
+from .schema import get_or_load_cached_schema, schema_to_prompt
+from your_sql_generation_module import generate_sql_from_text
 
-    system_prompt = (
-        f"You are an assistant that converts natural language to SQL.\n\n"
-        f"{schema_prompt}\n"
-        f"Generate a SQL query based on the user's request."
-    )
+SCHEMA = get_or_load_cached_schema()
+SCHEMA_PROMPT = schema_to_prompt(SCHEMA)
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": nl_query}
-        ]
-    )
-    return response['choices'][0]['message']['content']
+
+@tool
+def text_to_sql(query: str) -> str:
+    return generate_sql_from_text(query, SCHEMA_PROMPT)
+
+
+@tool
+def reload_schema() -> str:
+    global SCHEMA, SCHEMA_PROMPT
+    SCHEMA = get_or_load_cached_schema()
+    SCHEMA_PROMPT = schema_to_prompt(SCHEMA)
+    return "Schema reloaded successfully."
+
+
+if __name__ == "__main__":
+    tool_server([text_to_sql, reload_schema]).run()
