@@ -246,3 +246,32 @@ filtered_schema = filter_tables(full_schema, config["include_tables"])
 
 print(filtered_schema)
 
+# Utility function
+
+def schema_to_prompt(schema: dict) -> str:
+    lines = ["The database has the following tables and columns:\n"]
+    for table, columns in schema.items():
+        lines.append(f"Table `{table}`:")
+        for col, dtype in columns.items():
+            lines.append(f"  - {col}: {dtype}")
+        lines.append("")  # Add blank line between tables
+    return "\n".join(lines)
+
+
+def generate_sql_from_text(nl_query: str, schema: dict) -> str:
+    schema_prompt = schema_to_prompt(schema)
+
+    system_prompt = (
+        f"You are an assistant that converts natural language to SQL.\n\n"
+        f"{schema_prompt}\n"
+        f"Generate a SQL query based on the user's request."
+    )
+
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": nl_query}
+        ]
+    )
+    return response['choices'][0]['message']['content']
