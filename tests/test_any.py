@@ -205,4 +205,44 @@ class SQLServerSchemaReader(SchemaReader):
         conn.close()
         return schema
 
+# filter.py
+
+def filter_tables(schema: dict, include: dict) -> dict:
+    """
+    include = {
+        "exact": ["users", "orders"],
+        "starts_with": ["user_"],
+        "ends_with": ["_log"]
+    }
+    """
+    result = {}
+
+    for table, columns in schema.items():
+        if (
+            table in include.get("exact", []) or
+            any(table.startswith(prefix) for prefix in include.get("starts_with", [])) or
+            any(table.endswith(suffix) for suffix in include.get("ends_with", []))
+        ):
+            result[table] = columns
+
+    return result
+
+
+# example_usage.py
+
+from config import config
+from factory import get_schema_reader
+from filter import filter_tables
+
+reader = get_schema_reader(
+    source_type=config["source_type"],
+    db_type=config.get("db_type"),
+    conn_details=config.get("conn_details"),
+    file_path=config.get("file_path")
+)
+
+full_schema = reader.get_schema()
+filtered_schema = filter_tables(full_schema, config["include_tables"])
+
+print(filtered_schema)
 
