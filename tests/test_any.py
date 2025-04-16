@@ -205,6 +205,7 @@ def get_schema_reader(source_type: str, db_type: str = None, conn_details: dict 
         raise ValueError(f"Unsupported source_type: {source_type}")
 
 # text_to_sql_schema/schema.py
+# text_to_sql_schema/schema.py
 import os
 from dotenv import load_dotenv
 from .readers.factory import get_schema_reader
@@ -214,21 +215,84 @@ load_dotenv()
 SCHEMA_CACHE = None
 
 
+class ConnectionDetailsFactory:
+    _strategies = {}
+
+    @classmethod
+    def register(cls, db_type):
+        def decorator(strategy_cls):
+            cls._strategies[db_type] = strategy_cls()
+            return strategy_cls
+        return decorator
+
+    @classmethod
+    def get(cls, db_type):
+        if db_type not in cls._strategies:
+            raise ValueError(f"Unsupported db_type: {db_type}")
+        return cls._strategies[db_type].get_connection_details()
+
+
+@ConnectionDetailsFactory.register("postgres")
+@ConnectionDetailsFactory.register("mysql")
+class DefaultSQLStrategy:
+    def get_connection_details(self):
+        return {
+            "host": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", 5432)),
+            "database": os.getenv("DB_NAME"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD")
+        }
+
+
+@ConnectionDetailsFactory.register("sqlite")
+class SQLiteStrategy:
+    def get_connection_details(self):
+        return {
+            "database": os.getenv("DB_NAME")
+        }
+
+
+@ConnectionDetailsFactory.register("oracle")
+class OracleStrategy:
+    def get_connection_details(self):
+        return {
+            "host": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", 1521)),
+            "service_name": os.getenv("DB_SERVICE_NAME"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+            "schema": os.getenv("DB_SCHEMA")
+        }
+
+
+@ConnectionDetailsFactory.register("mongodb")
+class MongoDBStrategy:
+    def get_connection_details(self):
+        return {
+            "uri": os.getenv("DB_URI"),
+            "database": os.getenv("DB_NAME")
+        }
+
+
+@ConnectionDetailsFactory.register("sqlserver")
+class SQLServerStrategy:
+    def get_connection_details(self):
+        return {
+            "server": os.getenv("DB_HOST"),
+            "port": int(os.getenv("DB_PORT", 1433)),
+            "database": os.getenv("DB_NAME"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+            "driver": os.getenv("DB_DRIVER")
+        }
+
+
 def get_schema_from_db():
     db_type = os.getenv("DB_TYPE")
     source_type = os.getenv("SCHEMA_SOURCE", "db")
     file_path = os.getenv("SCHEMA_FILE")
-
-    conn_details = {
-        "host": os.getenv("DB_HOST"),
-        "port": int(os.getenv("DB_PORT", 5432)),
-        "database": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD"),
-        "service_name": os.getenv("DB_SERVICE_NAME"),
-        "driver": os.getenv("DB_DRIVER"),
-        "uri": os.getenv("DB_URI")
-    }
+    conn_details = ConnectionDetailsFactory.get(db_type)
 
     reader = get_schema_reader(
         source_type=source_type,
