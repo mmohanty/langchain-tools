@@ -1,16 +1,30 @@
 # text_to_sql_schema/readers/base.py
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, TypedDict, Optional
 
+class ColumnMeta(TypedDict):
+    type: str
+    description: Optional[str]
+
+
+class TableSchema(TypedDict):
+    description: Optional[str]
+    columns: Dict[str, ColumnMeta]
+    
 class SchemaReader(ABC):
     @abstractmethod
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
+    def get_schema(self) -> Dict[str, TableSchema]:
         """
         Returns schema in the form:
         {
-            "table_name": {
-                "column_name": "DATA_TYPE"
+          "users": {
+            "description": "Contains user account info",
+            "columns": {
+              "id": { "type": "INTEGER", "description": "Unique user ID" },
+              "name": { "type": "VARCHAR", "description": "User's full name" },
+              ...
             }
+          }
         }
         """
         pass
@@ -25,16 +39,16 @@ class JSONSchemaReader(SchemaReader):
     def __init__(self, file_path: str):
         self.file_path = file_path
 
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
+    def get_schema(self) -> Dict[str, TableSchema]:
         with open(self.file_path) as f:
             data = json.load(f)
 
         if not isinstance(data, dict):
             raise ValueError("Schema must be a dict of table -> { column: type }")
 
-        for table, columns in data.items():
-            if not isinstance(columns, dict):
-                raise ValueError(f"Columns for table '{table}' must be a dict")
+        for table, meta in data.items():
+            if not isinstance(meta, dict) or "columns" not in meta:
+                raise ValueError(f"Invalid table schema format in '{table}'")
 
         return data
 
@@ -48,7 +62,7 @@ class PostgresSchemaReader(SchemaReader):
     def __init__(self, conn_details):
         self.conn_details = conn_details
 
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
+    def get_schema(self) -> Dict[str, TableSchema]:
         conn = psycopg2.connect(**self.conn_details)
         cursor = conn.cursor()
         cursor.execute("""
@@ -59,8 +73,17 @@ class PostgresSchemaReader(SchemaReader):
         """)
 
         schema = {}
-        for table, column, dtype in cursor.fetchall():
-            schema.setdefault(table, {})[column] = dtype
+        for table, column, dtype in result.fetchall():
+            if table not in schema:
+                schema[table] = {
+                    "description": None,
+                    "columns": {}
+                }
+
+            schema[table]["columns"][column] = {
+                "type": dtype,
+                "description": None
+            }
 
         cursor.close()
         conn.close()
@@ -76,17 +99,26 @@ class MySQLSchemaReader(SchemaReader):
     def __init__(self, conn_details):
         self.conn_details = conn_details
 
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
+    def get_schema(self) -> Dict[str, TableSchema]:
         conn = pymysql.connect(**self.conn_details)
         cursor = conn.cursor()
         cursor.execute("SHOW TABLES")
         tables = [row[0] for row in cursor.fetchall()]
 
-        schema = {}
+        schema: Dict[str, TableSchema] = {}
+
         for table in tables:
-            cursor.execute(f"DESCRIBE {table}")
-            for col in cursor.fetchall():
-                schema.setdefault(table, {})[col[0]] = col[1]
+            cursor.execute(f"DESCRIBE `{table}`")
+            columns = cursor.fetchall()
+            schema[table] = {
+                "description": None,
+                "columns": {
+                    col[0]: {
+                        "type": col[1],
+                        "description": None
+                    } for col in columns
+                }
+            }
 
         cursor.close()
         conn.close()
@@ -102,18 +134,30 @@ class SQLiteSchemaReader(SchemaReader):
     def __init__(self, conn_details):
         self.database = conn_details["database"]
 
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
+    def get_schema(self) -> Dict[str, TableSchema]:
         conn = sqlite3.connect(self.database)
         cursor = conn.cursor()
 
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [row[0] for row in cursor.fetchall()]
+        # tables = [row[0] for row in cursor.fetchall()]
 
         schema = {}
+        tables = [row[0] for row in cursor.fetchall()]
+
+        schema: Dict[str, TableSchema] = {}
+
         for table in tables:
             cursor.execute(f"PRAGMA table_info({table})")
-            for row in cursor.fetchall():
-                schema.setdefault(table, {})[row[1]] = row[2]
+            columns = cursor.fetchall()
+            schema[table] = {
+                "description": None,
+                "columns": {
+                    col[1]: {
+                        "type": col[2],
+                        "description": None
+                    } for col in columns
+                }
+            }
 
         cursor.close()
         conn.close()
@@ -130,12 +174,20 @@ class MongoSchemaReader(SchemaReader):
         self.client = MongoClient(conn_details["uri"])
         self.database = self.client[conn_details["database"]]
 
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
-        schema = {}
-        for collection_name in self.database.list_collection_names():
-            doc = self.database[collection_name].find_one()
-            if doc:
-                schema[collection_name] = {k: type(v).__name__ for k, v in doc.items() if k != '_id'}
+    def get_schema(self) -> Dict[str, TableSchema]:
+        schema: Dict[str, TableSchema] = {}
+
+        for coll_name in db.list_collection_names():
+            doc = db[coll_name].find_one()
+            schema[coll_name] = {
+                "description": None,
+                "columns": {
+                    k: {
+                        "type": type(v).__name__.upper(),
+                        "description": None
+                    } for k, v in (doc or {}).items()
+                }
+            }
         return schema
 
 
@@ -148,7 +200,7 @@ class SQLServerSchemaReader(SchemaReader):
     def __init__(self, conn_details):
         self.conn_details = conn_details
 
-    def get_schema(self) -> Dict[str, Dict[str, str]]:
+    def get_schema(self) -> Dict[str, TableSchema]:
         conn_str = (
             f"DRIVER={self.conn_details['driver']};"
             f"SERVER={self.conn_details['server']};"
@@ -167,12 +219,67 @@ class SQLServerSchemaReader(SchemaReader):
         """)
 
         schema = {}
-        for table, column, dtype in cursor.fetchall():
-            schema.setdefault(table, {})[column] = dtype
+        for table, column, dtype in result.fetchall():
+            if table not in schema:
+                schema[table] = {
+                    "description": None,
+                    "columns": {}
+                }
+
+            schema[table]["columns"][column] = {
+                "type": dtype,
+                "description": None
+            }
 
         cursor.close()
         conn.close()
         return schema
+
+
+# text_to_sql_schema/readers/oracle.py
+import oracledb
+from typing import Dict
+from .base import SchemaReader, TableSchema
+
+class OracleSchemaReader(SchemaReader):
+    def __init__(self, conn_details):
+        self.conn_details = conn_details
+
+    def get_schema(self) -> Dict[str, TableSchema]:
+        conn = oracledb.connect(
+            user=self.conn_details["user"],
+            password=self.conn_details["password"],
+            dsn=oracledb.makedsn(
+                self.conn_details["host"],
+                self.conn_details["port"],
+                service_name=self.conn_details["service_name"]
+            )
+        )
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT table_name, column_name, data_type
+            FROM all_tab_columns
+            WHERE owner = :schema
+            ORDER BY table_name, column_id
+        """, schema=self.conn_details["schema"].upper())
+
+        schema: Dict[str, TableSchema] = {}
+
+        for table, column, dtype in cursor.fetchall():
+            schema.setdefault(table, {
+                "description": None,
+                "columns": {}
+            })
+            schema[table]["columns"][column] = {
+                "type": dtype,
+                "description": None
+            }
+
+        cursor.close()
+        conn.close()
+        return schema
+
 
 
 # text_to_sql_schema/readers/factory.py
@@ -205,7 +312,7 @@ def get_schema_reader(source_type: str, db_type: str = None, conn_details: dict 
         raise ValueError(f"Unsupported source_type: {source_type}")
 
 # text_to_sql_schema/schema.py
-# text_to_sql_schema/schema.py
+import json
 import os
 from dotenv import load_dotenv
 from .readers.factory import get_schema_reader
@@ -287,12 +394,40 @@ class SQLServerStrategy:
             "driver": os.getenv("DB_DRIVER")
         }
 
+def enrich_schema_with_descriptions(schema: dict, desc_file_path: str) -> dict:
+    if not os.path.exists(desc_file_path):
+        return schema  # fallback
+
+    with open(desc_file_path) as f:
+        descriptions = json.load(f)
+
+    enriched = {}
+
+    for table, columns in schema.items():
+        table_info = descriptions.get(table, {})
+        table_desc = table_info.get("description", "")
+        column_descs = table_info.get("columns", {})
+
+        enriched[table] = {
+            "description": table_desc,
+            "columns": {}
+        }
+
+        for col, dtype in columns.items():
+            enriched[table]["columns"][col] = {
+                "type": dtype,
+                "description": column_descs.get(col, "")
+            }
+
+    return enriched
+
 
 def get_schema_from_db():
     db_type = os.getenv("DB_TYPE")
     source_type = os.getenv("SCHEMA_SOURCE", "db")
     file_path = os.getenv("SCHEMA_FILE")
     conn_details = ConnectionDetailsFactory.get(db_type)
+    desc_file_path = os.getenv("SCHEMA_DESC_FILE")
 
     reader = get_schema_reader(
         source_type=source_type,
@@ -300,7 +435,8 @@ def get_schema_from_db():
         conn_details=conn_details,
         file_path=file_path
     )
-    return reader.get_schema()
+    raw_schema = reader.get_schema()
+    return enrich_schema_with_descriptions(raw_schema, desc_file_path)
 
 
 def filter_tables(schema: dict, include: dict) -> dict:
@@ -337,10 +473,10 @@ def get_or_load_cached_schema():
 
 def schema_to_prompt(schema: dict) -> str:
     lines = ["The database has the following tables and columns:\n"]
-    for table, columns in schema.items():
-        lines.append(f"Table `{table}`:")
-        for col, dtype in columns.items():
-            lines.append(f"  - {col}: {dtype}")
+    for table, details in schema.items():
+        lines.append(f"Table `{table}`: {details.get('description', '')}")
+        for col, col_meta in details["columns"].items():
+            lines.append(f"  - {col}: {col_meta['type']} — {col_meta.get('description', '')}")
         lines.append("")
     return "\n".join(lines)
 
