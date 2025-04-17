@@ -394,32 +394,28 @@ class SQLServerStrategy:
             "driver": os.getenv("DB_DRIVER")
         }
 
-def enrich_schema_with_descriptions(schema: dict, desc_file_path: str) -> dict:
-    if not os.path.exists(desc_file_path):
-        return schema  # fallback
+def enrich_schema_with_descriptions(
+    schema: Dict[str, TableSchema],
+    desc_file_path: str
+) -> Dict[str, TableSchema]:
+    if not desc_file_path or not os.path.exists(desc_file_path):
+        return schema  # skip if not provided
 
-    with open(desc_file_path) as f:
+    with open(desc_file_path, "r") as f:
         descriptions = json.load(f)
 
-    enriched = {}
+    for table_name, table_info in schema.items():
+        # Add table-level description
+        if table_name in descriptions:
+            desc_entry = descriptions[table_name]
+            table_info["description"] = desc_entry.get("description", table_info.get("description"))
 
-    for table, columns in schema.items():
-        table_info = descriptions.get(table, {})
-        table_desc = table_info.get("description", "")
-        column_descs = table_info.get("columns", {})
+            # Add column-level descriptions
+            for col_name, col_info in table_info["columns"].items():
+                if col_name in desc_entry.get("columns", {}):
+                    col_info["description"] = desc_entry["columns"][col_name]
 
-        enriched[table] = {
-            "description": table_desc,
-            "columns": {}
-        }
-
-        for col, dtype in columns.items():
-            enriched[table]["columns"][col] = {
-                "type": dtype,
-                "description": column_descs.get(col, "")
-            }
-
-    return enriched
+    return schema
 
 
 def get_schema_from_db():
